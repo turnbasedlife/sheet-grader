@@ -122,7 +122,7 @@ var GRADER_CONFIG = {
   // cells: a cell with its own formula is still compared by formula text, and
   // the row's other columns still catch a sort -- so don't list every content
   // column. Matched case-insensitively (see normalizeConfig_); an entry that
-  // matches no header is logged as a WARNING and ignored.
+  // matches no header is ignored, with a WARNING in the log and the Log sheet notes.
   MOVE_CHECK_SKIP_COLUMNS: [],
 
   // Columns to skip when building the prompt (already metadata, not content
@@ -279,6 +279,11 @@ function gradeNewRows() {
     var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
     var colMap = {};
     var dupKeys = {};
+    // Config/header warnings that don't stop the run. Each is logged where it
+    // is found and also collected here, so the Log sheet's notes column can
+    // repeat it: Logger output only shows under Executions in the editor,
+    // which is not where a sheet user looks (2026-11-20 audit).
+    var configWarnings = [];
     for (var h = 0; h < headers.length; h++) {
       var key = headers[h].toString().toLowerCase().trim();
       if (!key) continue;
@@ -286,7 +291,7 @@ function gradeNewRows() {
       // the sheet row number, _snapshot the values read at the start of the
       // run), so a column with such a header would be overwritten and never read.
       if (key.charAt(0) === '_') {
-        Logger.log('WARNING: column ' + (h + 1) + ' is headed "' + key + '" -- headers starting with "_" are reserved; rename it or its contents are ignored.');
+        logConfigWarning_(configWarnings, 'column ' + (h + 1) + ' is headed "' + key + '" -- headers starting with "_" are reserved; rename it or its contents are ignored.');
         continue;
       }
       // Duplicate header names collapse to the last column, which can silently
@@ -294,7 +299,7 @@ function gradeNewRows() {
       // hard-fail on a duplicated *required* column and warn on the rest.
       if (colMap.hasOwnProperty(key)) {
         dupKeys[key] = true;
-        Logger.log('WARNING: duplicate column header "' + key + '" -- using the rightmost (column ' + (h + 1) + ').');
+        logConfigWarning_(configWarnings, 'duplicate column header "' + key + '" -- using the rightmost (column ' + (h + 1) + ').');
       }
       colMap[key] = h + 1;
     }
@@ -304,11 +309,11 @@ function gradeNewRows() {
     if (!cols) throw new Error('Data sheet columns could not be resolved -- see the log line above.');
 
     if (hasTitleOnlyKeyword && !hasTitleColumn_(colMap)) {
-      Logger.log('WARNING: "title:" exclude keywords are set, but the Data sheet has no ' +
+      logConfigWarning_(configWarnings, '"title:" exclude keywords are set, but the Data sheet has no ' +
         GRADER_CONFIG.TITLE_COLUMNS.join('/') + ' column, so they will never match.');
     }
 
-    var rows = getUngradedRows_(sheet, headers, colMap);
+    var rows = getUngradedRows_(sheet, headers, colMap, configWarnings);
     if (rows.length === 0) {
       Logger.log('No ungraded rows. Exiting.');
       return;
@@ -389,7 +394,7 @@ function gradeNewRows() {
     // sheet hiccup must not turn a successful run into a FATAL ERROR -- swallow it.
     if (GRADER_CONFIG.ENABLE_RUN_LOG) {
       try {
-        appendRunLog_(stats, startTime, totalElapsedSec, movedWarning);
+        appendRunLog_(stats, startTime, totalElapsedSec, buildRunNotes_(movedWarning, configWarnings));
       } catch (logErr) {
         Logger.log('WARNING: failed to write run log: ' + logErr.message);
       }
@@ -425,6 +430,31 @@ function gradeNewRows() {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * Logs a non-fatal config/header warning and, when `collected` is an array,
+ * keeps it for the Log sheet's notes column (see buildRunNotes_).
+ */
+function logConfigWarning_(collected, message) {
+  Logger.log('WARNING: ' + message);
+  if (collected) collected.push(message);
+}
+
+/**
+ * The text for the Log sheet's notes cell: the most-rows-deferred warning
+ * first (it explains the row's `deferred` count), then each config warning
+ * prefixed "Config warning:", joined with " | ". '' when there is neither.
+ * Pure. Neither part may displace the other -- they share the one cell.
+ */
+function buildRunNotes_(movedWarning, configWarnings) {
+  var parts = [];
+  if (movedWarning) parts.push(movedWarning);
+  var list = configWarnings || [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i]) parts.push('Config warning: ' + list[i]);
+  }
+  return parts.join(' | ');
 }
 
 /**
@@ -702,9 +732,10 @@ function isGradableStatus_(rawStatus) {
  * re-check can compare formula cells by text instead of by recalculated
  * value) and _volatileCols (see findVolatileColumns_, plus any column named in
  * MOVE_CHECK_SKIP_COLUMNS, see findMoveCheckSkipColumns_). Every iterator
- * over a row skips "_"-prefixed keys.
+ * over a row skips "_"-prefixed keys. `configWarnings` (optional) is the
+ * caller's array of warnings bound for the Log sheet's notes column.
  */
-function getUngradedRows_(sheet, headers, colMap) {
+function getUngradedRows_(sheet, headers, colMap, configWarnings) {
   var lastRow = sheet.getLastRow();
   if (lastRow <= 1) return [];
 
@@ -731,7 +762,7 @@ function getUngradedRows_(sheet, headers, colMap) {
     if (skipByName.flags[s]) volatileCols[s] = true;
   }
   if (skipByName.unmatched.length) {
-    Logger.log('WARNING: MOVE_CHECK_SKIP_COLUMNS names "' + skipByName.unmatched.join('", "') +
+    logConfigWarning_(configWarnings, 'MOVE_CHECK_SKIP_COLUMNS names "' + skipByName.unmatched.join('", "') +
       '", which is not a ' + GRADER_CONFIG.DATA_SHEET + ' sheet header -- ignored. Check the spelling against row 1.');
   }
   var statusIdx = colMap[GRADER_CONFIG.STATUS_COLUMN] - 1;
@@ -893,10 +924,12 @@ function buildMovedRowWarning_(moved, reached, colCounts, headers, notReached) {
   for (var k in colCounts) if (colCounts.hasOwnProperty(k)) keys.push(k);
   keys.sort(function (a, b) { return (colCounts[b] - colCounts[a]) || (Number(a) - Number(b)); });
   var parts = [];
+  var unheaded = false;
   for (var i = 0; i < keys.length; i++) {
     var idx = Number(keys[i]);
     var header = idx >= 0 && headers && headers[idx] !== undefined && headers[idx] !== null
       ? headers[idx].toString().trim() : '';
+    if (idx >= 0 && !header) unheaded = true;
     var label = idx < 0 ? 'row width' : (header || ('column ' + (idx + 1)));
     parts.push(label + ' (' + colCounts[keys[i]] + ')');
   }
@@ -908,7 +941,11 @@ function buildMovedRowWarning_(moved, reached, colCounts, headers, notReached) {
     'it changes on its own (a formula recalculating through a helper cell?). Either add ' +
     'that column\'s header to MOVE_CHECK_SKIP_COLUMNS, which leaves just that column out of ' +
     'the moved-row check, or write the volatile function into its own formula (NOW() ' +
-    'itself, not a cell holding =NOW()).';
+    'itself, not a cell holding =NOW()).' +
+    // A blank header can never match a MOVE_CHECK_SKIP_COLUMNS entry, so for a
+    // column shown by number the first fix needs a header to exist first.
+    (unheaded ? ' A column shown here by number has no header in row 1: give it one before ' +
+      'listing it in MOVE_CHECK_SKIP_COLUMNS, or use the formula fix.' : '');
 }
 
 /**
@@ -1243,7 +1280,8 @@ function updateRowGrade_(sheet, row, cols, grade, reasoning) {
 // Column order for the Log sheet. 'deferred' mirrors stats.skipped (rows that
 // keep their existing status when a run hits the timer budget, stops on a fatal
 // error, or finds a row moved, and resume next time). 'notes' carries the
-// most-rows-deferred warning (buildMovedRowWarning_) and is otherwise blank.
+// most-rows-deferred warning (buildMovedRowWarning_) and any config warnings
+// (buildRunNotes_), and is otherwise blank.
 var RUN_LOG_HEADERS = ['run_at', 'total', 'graded', 'rejected', 'errors', 'deferred', 'elapsed_sec', 'notes'];
 
 /**

@@ -59,6 +59,8 @@ with its header listed in `MOVE_CHECK_SKIP_COLUMNS` as the warning advises and w
 `ARRAYFORMULA` added to `VOLATILE_FUNCTIONS`, a 200-row
 backlog on a fake clock — outlasting the timer budget with rows edited mid-call and
 with nothing moving, and skipped for one API call with that spill —
+a misspelled `MOVE_CHECK_SKIP_COLUMNS` name and duplicate/reserved headers
+reaching the Log `notes` as config warnings,
 and a Log sheet from before the `notes` column). Run it after touching
 anything; add a scenario there when touching the loop or a failure path.
 
@@ -75,7 +77,9 @@ anything; add a scenario there when touching the loop or a failure path.
   the most-rows-deferred warning (`buildMovedRowWarning_`, gated on
   `MOVED_ROW_WARN_RATIO`, measured against `reachedRows` — the rows handed to
   `gradeOneRow_` — not `stats.total`) from the per-column tally of moved-row skips, logs it, and
-  hands it to `appendRunLog_` for the Log sheet's `notes` column.
+  hands it to `appendRunLog_` for the Log sheet's `notes` column, joined by
+  `buildRunNotes_` with the run's `configWarnings` (non-fatal header/config warnings,
+  each logged and collected through `logConfigWarning_`).
 - `gradeOneRow_` — Stage 1 (regex reject, no API call) → Stage 2 (LLM) → write back for a
   single row. Returns `{ outcome, madeApiCall, fatal, transient, changedCols }`; the caller uses
   `outcome` for stats, `madeApiCall` to decide whether to sleep (auto-rejects don't
@@ -101,7 +105,8 @@ anything; add a scenario there when touching the loop or a failure path.
   `findRowChanges_` / `findChangedColumns_` / `rowMatchesSnapshot_`, `findRowTitle_` /
   `hasTitleColumn_` / `guessRowTitle_`, `checkExcludeKeywords_`, `callLlmApi_`,
   `buildGradingPrompt_`, `parseGradeResponse_`, `updateRowGrade_`,
-  `buildMovedRowWarning_`, `buildRunLogRow_` / `appendRunLog_`
+  `buildMovedRowWarning_`, `logConfigWarning_` / `buildRunNotes_`,
+  `buildRunLogRow_` / `appendRunLog_`
   (end-of-run summary to the `Log` sheet, gated on `ENABLE_RUN_LOG`).
   The sheet-I/O helpers keep their parsing in a pure companion
   (`getOrCreateCriteria_` → `parseCriteriaValues_`, `getUngradedRows_` →
@@ -258,12 +263,19 @@ anything; add a scenario there when touching the loop or a failure path.
   indirect spill it describes. "Add it to VOLATILE_FUNCTIONS" shipped meaning the
   volatile function, which `findVolatileColumns_` can never see in that column's
   formula (2026-11-13 audit). It now points at `MOVE_CHECK_SKIP_COLUMNS`, and the harness
-  runs that advice end to end.
+  runs that advice end to end. A column with a blank header is labelled `column N` and
+  can't be listed there, so the warning adds "give it a header first" for that case
+  (2026-11-20 audit); keep that sentence in step with the label.
+- Adding a non-fatal config or header warning? Send it through `logConfigWarning_` with
+  the run's `configWarnings` array, not a bare `Logger.log`, so it reaches the Log
+  sheet's `notes` cell. `buildRunNotes_` puts the deferral warning first and config
+  warnings after it; neither may displace the other (2026-11-20 audit).
 - Changing `MOVE_CHECK_SKIP_COLUMNS` / `findMoveCheckSkipColumns_`? Its flags are merged
   into `_volatileCols` in `getUngradedRows_`, so a listed column gets exactly the volatile
   rule (formula-less cells skipped, formula cells still compared by text) and a sort is
   still caught through the other columns. Keep the WARNING for a name that matches no
-  header: a typo that silently does nothing is the failure this setting exists to end.
+  header, and keep it going to the Log `notes` as well as the execution log: a typo that
+  silently does nothing is the failure this setting exists to end.
 - Changing `updateRowGrade_`? It takes a `cols` object (`{ gradeCol, reasoningCol,
   statusCol }`), not three separate args.
 - Changing which rows a run picks up? Edit `STATUSES_TO_GRADE` (currently `new` +

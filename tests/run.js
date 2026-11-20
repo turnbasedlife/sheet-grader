@@ -49,6 +49,7 @@ var findVolatileColumns_ = sandbox.findVolatileColumns_;
 var findChangedColumns_ = sandbox.findChangedColumns_;
 var findMoveCheckSkipColumns_ = sandbox.findMoveCheckSkipColumns_;
 var buildMovedRowWarning_ = sandbox.buildMovedRowWarning_;
+var buildRunNotes_ = sandbox.buildRunNotes_;
 var gradeNewRows = sandbox.gradeNewRows;
 var RUN_LOG_HEADERS = sandbox.RUN_LOG_HEADERS;
 var EXCLUDE_KEYWORDS_PLACEHOLDER = sandbox.EXCLUDE_KEYWORDS_PLACEHOLDER;
@@ -347,6 +348,23 @@ check('one of one deferred warns', /^1 of 1 rows/.test(buildMovedRowWarning_(1, 
 })();
 check('a width change is named as such', buildMovedRowWarning_(2, 2, { '-1': 2 }, WH).indexOf('row width (2)') !== -1);
 check('a column with no header is named by number', buildMovedRowWarning_(2, 2, { 6: 2 }, WH).indexOf('column 7 (2)') !== -1);
+// A blank header can't be listed in MOVE_CHECK_SKIP_COLUMNS, so the warning has
+// to say a header is needed first -- and only when such a column is named.
+check('a column with no header: the warning says to give it a header first',
+  buildMovedRowWarning_(2, 2, { 6: 2 }, WH).indexOf('has no header in row 1') !== -1 &&
+  buildMovedRowWarning_(2, 2, { 5: 2 }, WH.concat([''])).indexOf('has no header in row 1') === -1);
+check('a blank-string header counts as no header',
+  buildMovedRowWarning_(2, 2, { 6: 2 }, WH.concat(['  '])).indexOf('has no header in row 1') !== -1);
+check('a width change alone does not ask for a header',
+  buildMovedRowWarning_(2, 2, { '-1': 2 }, WH).indexOf('has no header in row 1') === -1);
+
+// --- buildRunNotes_ (what lands in the Log sheet's notes cell) --------------
+eq('run notes: nothing to say is blank', buildRunNotes_('', []), '');
+eq('run notes: blank with no list at all', buildRunNotes_(''), '');
+eq('run notes: the deferral warning alone is unchanged', buildRunNotes_('moved', []), 'moved');
+eq('run notes: a config warning alone is prefixed', buildRunNotes_('', ['typo']), 'Config warning: typo');
+eq('run notes: deferral warning first, then each config warning',
+  buildRunNotes_('moved', ['a', 'b']), 'moved | Config warning: a | Config warning: b');
 // The share is of the rows the run reached, not of the whole backlog: rows the
 // timer never got to are mentioned, never counted (2026-11-06 audit).
 (function () {
@@ -894,7 +912,11 @@ function ok200(content) {
     check('indirect spill + header listed: does not throw', r.threw === null);
     eq('indirect spill + header listed: all rows graded, none deferred', r.logRow, [3, 3, 0, 0, 0]);
     eq('indirect spill + header listed: one API call per row', r.calls, 3);
-    check('indirect spill + header listed: no note', !r.logNotes);
+    check('indirect spill + header listed: no deferral note',
+      String(r.logNotes).indexOf('were deferred') === -1);
+    check('a MOVE_CHECK_SKIP_COLUMNS typo is shown in the Log notes, the correct name is not',
+      r.logNotes.indexOf('Config warning: MOVE_CHECK_SKIP_COLUMNS names "agee"') === 0 &&
+      r.logNotes.indexOf('"age"') === -1);
     check('a MOVE_CHECK_SKIP_COLUMNS entry that matches no header is logged, not silently ignored',
       logLines.some(function (l) { return l.indexOf('WARNING: MOVE_CHECK_SKIP_COLUMNS names "agee"') !== -1; }) &&
       !logLines.some(function (l) { return l.indexOf('MOVE_CHECK_SKIP_COLUMNS names "age"') !== -1; }));
@@ -916,6 +938,46 @@ function ok200(content) {
     eq('indirect spill + header listed: an edit to an unlisted column still defers that row', r3.logRow, [3, 2, 0, 0, 1]);
     check('indirect spill + header listed: the edited row got no grade', r3.data[2][3] === '');
   } finally { cfg.MOVE_CHECK_SKIP_COLUMNS = saved; }
+})();
+
+// The typo case the notes exist for: the header is misspelled in
+// MOVE_CHECK_SKIP_COLUMNS, so the spill still defers rows. The notes cell must
+// carry both -- the deferral warning first, not displaced, then the typo.
+(function () {
+  var H = HEADERS.concat(['Age']);
+  var saved = cfg.MOVE_CHECK_SKIP_COLUMNS;
+  cfg.MOVE_CHECK_SKIP_COLUMNS = ['Agee'];
+  normalizeConfig_(cfg);
+  try {
+    var r = runScenario({
+      data: [H.slice(), ['One', 'a', 'new', '', '', 1], ['Two', 'b', 'new', '', '', 1], ['Three', 'c', 'new', '', '', 1]],
+      formulas: [[], ['', '', '', '', '', '=ARRAYFORMULA($H$1-E2:E)'], [], []],
+      respond: function (n, sheets) {
+        var g = sheets[cfg.DATA_SHEET].grid;
+        for (var i = 1; i < g.length; i++) g[i][5] += 1;
+        return ok200('GRADE: B\nREASONING: Fine.');
+      } });
+    eq('misspelled skip column: the spill still defers rows', r.logRow, [3, 1, 0, 0, 2]);
+    check('misspelled skip column: notes lead with the deferral warning',
+      r.logNotes.indexOf('2 of 3 rows were deferred') === 0);
+    check('misspelled skip column: notes then name the typo',
+      r.logNotes.indexOf(' | Config warning: MOVE_CHECK_SKIP_COLUMNS names "agee"') !== -1);
+  } finally { cfg.MOVE_CHECK_SKIP_COLUMNS = saved; }
+})();
+
+// The other config warnings reach the notes too: a duplicated non-required
+// header and a reserved "_" header, on a run that otherwise goes fine.
+(function () {
+  var H = HEADERS.concat(['Title', '_private']);
+  var r = runScenario({
+    data: [H.slice(), ['One', 'a', 'new', '', '', 'One again', 'x']],
+    respond: function () { return ok200('GRADE: B\nREASONING: Fine.'); } });
+  check('duplicate + reserved headers: run still grades', r.threw === null && r.data[1][2] === 'graded');
+  check('duplicate + reserved headers: both are in the Log notes',
+    r.logNotes.indexOf('Config warning: duplicate column header "title"') !== -1 &&
+    r.logNotes.indexOf('Config warning: column 7 is headed "_private"') !== -1);
+  check('duplicate + reserved headers: still logged as WARNING lines',
+    logLines.some(function (l) { return l.indexOf('WARNING: duplicate column header "title"') === 0; }));
 })();
 
 // A backlog longer than one run can reach. The pacing sleep advances a fake

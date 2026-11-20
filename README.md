@@ -284,7 +284,16 @@ moved-row check, or write the volatile function into the column's own formula
 (`=ARRAYFORMULA(NOW()-E2:E)` rather than `=ARRAYFORMULA($H$1-E2:E)`). A blunter
 third option is adding a function that formula does use (`ARRAYFORMULA`) to
 `VOLATILE_FUNCTIONS`, which exempts every column filled by one. Adding `NOW`
-again does nothing, because only the column's own formula text is read.
+again does nothing, because only the column's own formula text is read. If the
+note names a column by number (`column 7`), that column has no header in row 1
+and can't be listed until it has one; the note says so.
+
+`notes` also repeats any setup warning the run logged, each prefixed
+`Config warning:` and placed after the deferral note (separated by ` | `): a
+`MOVE_CHECK_SKIP_COLUMNS` name that matches no header, a duplicated header, a
+header starting with `_`, or `title:` keywords with no title column. So a
+mistyped column name shows up in the sheet, next to the deferral note it failed
+to fix, rather than only under Executions in the Apps Script editor.
 
 A run that dies outright — no API key, a blank `criteria_text` on an existing
 Criteria sheet, missing or duplicated required columns, an unhandled exception —
@@ -343,7 +352,7 @@ header, or status is matched case-insensitively.
 | `CRITERIA_KEY_HEADER` / `CRITERIA_VALUE_HEADER` | `field` / `value` | Criteria sheet column headers. |
 | `SKIP_COLUMNS_IN_PROMPT` | `status`, `grade`, `reasoning`, `id`, `scraped_at`, `graded_at` | Columns never sent to the LLM or checked by exclude keywords. Add anything you don't want leaving the sheet. |
 | `VOLATILE_FUNCTIONS` | `NOW`, `TODAY`, `RAND`, `RANDBETWEEN`, `RANDARRAY` | Spreadsheet functions that recalculate on every edit. A column whose formula names one of them (an `=ARRAYFORMULA(NOW()-…)` filling the column from its top cell) has its formula-less cells left out of the moved-row check, so each grade written doesn't make the rows below it look moved. Only the column's own formula text is read, so for a column that is volatile through a helper cell (`=ARRAYFORMULA($H$1-E2:E)`, `H1` holding `=NOW()`) use `MOVE_CHECK_SKIP_COLUMNS`, or add `ARRAYFORMULA` itself. |
-| `MOVE_CHECK_SKIP_COLUMNS` | *(empty)* | Data-sheet headers to leave out of the moved-row check, for a column that changes on its own in a way `VOLATILE_FUNCTIONS` can't see. The Log sheet's `notes` warning names the column; list its header here (`['age']`, any capitalisation). Only that column's formula-less cells are exempt, and the row's other columns still catch a sort, so don't list every content column. A name that matches no header is logged as a warning and ignored. |
+| `MOVE_CHECK_SKIP_COLUMNS` | *(empty)* | Data-sheet headers to leave out of the moved-row check, for a column that changes on its own in a way `VOLATILE_FUNCTIONS` can't see. The Log sheet's `notes` warning names the column; list its header here (`['age']`, any capitalisation). Only that column's formula-less cells are exempt, and the row's other columns still catch a sort, so don't list every content column. A name that matches no header is ignored, with a warning in the execution log and in the Log sheet's `notes` column. |
 | `MAX_FIELD_CHARS` | `600` | Per-field truncation in the prompt. Raise it if your rows have important long-form content. |
 | `ENABLE_RUN_LOG` | `true` | Append a per-run summary to the `Log` sheet. |
 | `MOVED_ROW_WARN_RATIO` | `0.5` | When more than this share of the rows a run reached (not counting rows left for the next run by the timer budget) are deferred as moved or changed mid-run, log a warning naming the columns that differed and write it to the Log sheet's `notes` column. Set above `1` to turn it off. |
@@ -401,7 +410,9 @@ that column again with `ARRAYFORMULA` added to `VOLATILE_FUNCTIONS` and with
 its header listed in `MOVE_CHECK_SKIP_COLUMNS`,
 a 200-row backlog on a fake clock (outlasting the timer budget with rows
 edited mid-call and with nothing moving, and skipped for one API call with
-that column), and a Log sheet from before the `notes` column. Real
+that column), a misspelled `MOVE_CHECK_SKIP_COLUMNS` name and other setup
+warnings reaching the Log sheet's `notes`, and a Log sheet from before the
+`notes` column. Real
 Sheets and network behavior still only run bound to a real spreadsheet.
 
 ## License
